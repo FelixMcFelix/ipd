@@ -30,9 +30,11 @@ endif::[]
 
 XXX
 
-== Background
+This work is currently implemented alongside link:../0055/README.adoc[IPD 55] in stlouis/Helios commit https://github.com/oxidecomputer/illumos-gate/commit/53ed1e30b6807e5e9d694326390914e7c53c0c94[53ed1e30b6807e5e9d694326390914e7c53c0c94].
 
-XXX
+== Bare minimum
+
+?? Need to store tuntype in the packet so as not to need to have some crazy signalling mechanism for all the tunnels in play in the system at any given time.
 
 [bibliography]
 == External References
