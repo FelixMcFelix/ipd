@@ -66,6 +66,8 @@ information is available at the end of this document.
 | draft    | [IPD 52 Extensible Boot Image Support](./ipd/0052/README.adoc)
 | draft    | [IPD 53 Retiring `fipe(4D)`](./ipd/0053/README.adoc)
 | predraft  | [IPD 54 Upgrading Illumos system sqlite to version 3](./ipd/0054/README.md)
+| predraft  | [IPD 55 Placing More Packet Info Into `dblk_t`](./ipd/0055/README.adoc)
+| predraft  | [IPD 56 Supporting Tunnel-Aware Offloads](./ipd/0056/README.adoc)
 
 ## Contributing
 

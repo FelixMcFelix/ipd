@@ -1,0 +1,40 @@
+:showtitle:
+:toc: left
+:numbered:
+:icons: font
+:state: predraft
+:revremark: State: {state}
+:authors: Kyle Simpson <kyle@oxide.computer>
+:sponsor:
+:source-highlighter: pygments
+:stem: latexmath
+ifdef::env-github[]
+:tip-caption: :bulb:
+:note-caption: :information_source:
+:important-caption: :heavy_exclamation_mark:
+:caution-caption: :fire:
+:warning-caption: :warning:
+endif::[]
+
+= IPD 55 – Placing More Packet Info Into `dblk_t`
+{authors}
+
+[cols="3"]
+|===
+|Authors: {authors}
+|Sponsor: {sponsor}
+|State: {state}
+|===
+
+== Introduction
+
+XXX
+
+== Background
+
+XXX
+
+[bibliography]
+== External References
+
+[[[crossbow]]] Sunay Tripathi _et al._ Crossbow: Network Virtualization & Resource Partitioning https://illumos.org/opensolaris/ARChive/PSARC/2006/357/revised.materials/Crossbow_Design_Doc.pdf
