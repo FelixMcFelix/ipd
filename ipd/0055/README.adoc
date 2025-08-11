@@ -137,11 +137,23 @@ E.g., `common/io/stream.c` lists 16B and 80B as entries within `dblk_sizes[]`; t
 An increase of 8B in `sizeof (dblk_t)` reduces the message buffers to 8B and 72B respectively.
 An increase of 16B (link:../0056/README.adoc[IPD 56]) leads to the loss of the first such `kmem_cache`, leaving 64B as the smallest message buffer size.
 
+== Future Developments
+
+Explicitly tracking a packet's structure allows us, at some point, to reconsider the role of partial checksums in the network stack.
+Given a fully parsed packet and today's checksum flags, we arguably have no need of `db_cksumstart`/`db_cksumend`/`db_cksumstuff`.
+The offset of a packet checksum within its layer is, more often than not, fixed, and so easily derived from this context.
+This would free up 24B within `dblk_t`, more than counteracting the cost of `packed_meoi_t` with or without link:../0056/README.adoc[IPD 56].
+
+A more extreme proposal would use this as the basis for _removing_ partial checksums, and handling only the fully computed cases and offloaded cases.
+This would free up flags in the provider interface (and generally simplify logic throughout the stack).
+NICs which require a partial checksum would compute this themselves (using a `mac_provider` API) before transmission on the basis of the above parse data.
+
 == Open questions
 
 * Should packet info live unconditionally within `dblk_t`?
 Would there be value in moving _all_ MAC-specific elements into a pointer, and filling this from a separate `kmem_cache`?
 How would we formalise that contract with callers of `allocb`?
+At what size does this pointer chasing outweigh the cost of a larger `dblk_t`, if at all?
 
 * This allows a driver to aid the Rx pathway. Should we also make space for a packet's flow/RSS hash, to assist in fanout?
 Would we aim to include the hash type, included fields etc.? Are there other fields we might want to pull in here?

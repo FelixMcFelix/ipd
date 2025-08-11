@@ -28,7 +28,7 @@ endif::[]
 
 == Introduction
 
-XXX
+Modern NICs are able to perform 
 
 This work is currently implemented alongside link:../0055/README.adoc[IPD 55] in stlouis/Helios commit https://github.com/oxidecomputer/illumos-gate/commit/53ed1e30b6807e5e9d694326390914e7c53c0c94[53ed1e30b6807e5e9d694326390914e7c53c0c94].
 
@@ -36,7 +36,44 @@ This work is currently implemented alongside link:../0055/README.adoc[IPD 55] in
 
 ?? Need to store tuntype in the packet so as not to need to have some crazy signalling mechanism for all the tunnels in play in the system at any given time.
 
-[bibliography]
-== External References
+== Proposal
 
-[[[crossbow]]] Sunay Tripathi _et al._ Crossbow: Network Virtualization & Resource Partitioning https://illumos.org/opensolaris/ARChive/PSARC/2006/357/revised.materials/Crossbow_Design_Doc.pdf
+=== Modifying IPD55
+
+?? inbuilt packet facts now store two layers.
+
+[code,c]
+----
+typedef struct packed_meoi {
+  /*
+   * The flags here contain values of type
+   * mac_ether_offload_flags. Currently, this runs up to
+   * (1 << 5) -- 6 flags. Not all are needed, however:
+   * - Tunnel: MEOI_L4INFO_SET is omitted, and is implied
+   *   by the tuntype and valid tuninfo.
+   * - Packet: MEOI_TUNINFO_SET cannot be part of this
+   *   flagset.
+   * The values stored here contain the rightward shift of
+   * all flags following an omitted entry.
+   */
+  uint16_t t_flags: 6;
+  uint16_t p_flags: 6;
+  uint16_t t_tuntype: 4;
+
+  uint16_t t_l2hlen: DBLK_L2HLEN_WIDTH;
+  uint16_t p_l2hlen: DBLK_L2HLEN_WIDTH;
+  uint16_t p_l4hlen: DBLK_L4HLEN_WIDTH;
+  /* t_l4hlen can be derived from t_tuntype */
+
+  /* L3 len may be unbounded, thanks to v6EHs */
+  uint16_t t_l3hlen;
+  uint16_t p_l3hlen;
+
+  uint16_t t_l3proto;
+  uint16_t p_l3proto;
+
+  uint16_t t_tunhlen;
+  uint8_t p_l4proto;
+  /* t_l4proto can be derived from t_tuntype */
+} packed_meoi_t;
+----
