@@ -54,6 +54,7 @@ The linked commit does not wire up upstream clients such as `ip` to fill out thi
 
 Each `dblk_t` carries a _packed_ representation of the `mac_ether_offload_info_t`, taking advantage of known maximum sizes for each layer where possible.
 
+.usr/src/uts/common/sys/stream.h
 [code,c]
 ----
 /* Ethernet Q-in-Q requires 22 Bytes. (5b -> max=31) */
@@ -71,7 +72,9 @@ typedef struct packed_meoi {
 	 * The flags here contain values of type
 	 * mac_ether_offload_flags.
 	 */
-	uint16_t flags: 6;
+	uint8_t flags;
+	uint8_t l4proto;
+
 	uint16_t l2hlen: DBLK_L2HLEN_WIDTH;
 	uint16_t l4hlen: DBLK_L4HLEN_WIDTH;
 
@@ -79,8 +82,6 @@ typedef struct packed_meoi {
 	uint16_t l3hlen;
 
 	uint16_t l3proto;
-
-	uint8_t l4proto;
 } packed_meoi_t;
 
 typedef struct datab {
@@ -92,7 +93,7 @@ typedef struct datab {
 	 * cleanup.
 	 */
 	union {
-		uint16_t valid;
+		uint8_t valid;
 		packed_meoi_t pktinfo;
 	} db_meoi;
 } dblk_t;
@@ -126,7 +127,7 @@ ICMP and ARP are paths known to reuse `mblk_t` s for the construction of replies
 Clearing this state at the MAC boundary isolates us from this risk today, at the cost of preventing MAC clients from using packet parse data.
 Another point is that the refcount behaviour of `ip` for TCP packets typically precludes us from having `mac_ether_offload_info` automatically set offload information on a packet after any successful parse.
 
-== Impacts
+== Impact
 
 The `dblk_t` type is 8B larger (or 16B larger when tunnel-aware), relative to an initial 112B.
 STREAMS-based interfaces are used more widely than just the netstack, thus costing more overhead per allocated STREAMS message.

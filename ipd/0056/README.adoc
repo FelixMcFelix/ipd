@@ -28,52 +28,181 @@ endif::[]
 
 == Introduction
 
-Modern NICs are able to perform 
+Modern NICs are able to perform stateless offloads on encapsulated packets, such as those sent within a Geneve <<rfc8926>> or VXLAN <<rfc7348>> frame.
+Typically this entails either walking past the full set of inner headers to fill an inner checksums, or correctly replicating and fixing up all inner/outer headers preceding a TCP segment which must be subdivided to fit a link's MTU.
+
+illumos today lacks the infrastructure required to represent this concept.
+In response this IPD outlines the datapath changes necessary for network packets to request these offloads, and proposes the shape of a MAC provider interface which allows for NIC drivers to express:
+
+* which tunnel types are explicitly supported by a given device,
+* which inner offloads are supported per inner protocol and tunnel type,
+* which checksum offloads are simultaneously supported _on the outer headers_ (L3 and L4).
 
 This work is currently implemented alongside link:../0055/README.adoc[IPD 55] in stlouis/Helios commit https://github.com/oxidecomputer/illumos-gate/commit/53ed1e30b6807e5e9d694326390914e7c53c0c94[53ed1e30b6807e5e9d694326390914e7c53c0c94].
+The implementation above includes support in `cxgbe` for these offloads on compatible Chelsio network cards.
+As in IPD55, the linked commit does not establish any in-tree tunnel clients which make use of these offloads.
+We are instead using this machinery routinely via the https://github.com/oxidecomputer/opte:[OPTE kernel module] in production for all applicable traffic.
 
-== Bare minimum
-
-?? Need to store tuntype in the packet so as not to need to have some crazy signalling mechanism for all the tunnels in play in the system at any given time.
+Although inclusion of link:../0055/README.adoc[IPD 55] is by no means a necessity for these changes to be possible, it has significant use in eliding multiple attempts to parse far deeper header stacks (e.g., both during `mac_tx` and within the NIC driver).
 
 == Proposal
 
-=== Modifying IPD55
+=== MAC provider interface
 
-?? inbuilt packet facts now store two layers.
+?? changes made here : ???
 
+?? <<rfc6935>> and <<rfc6936>> relax v6 + UDP checksum requirement for tunnelled frames.
+
+?? _Upper-Layer Protocol_ (ULP)
+
+Source for manpage updates corresponding to these changes can be found at https://github.com/oxidecomputer/illumos-gate/blob/3f1b0849ead4a2ed02b7abc984169d68f9cd63c6/usr/src/man/man9e/mac.9e[here for mac.9e], and https://github.com/oxidecomputer/illumos-gate/blob/3f1b0849ead4a2ed02b7abc984169d68f9cd63c6/usr/src/man/man9f/mac_hcksum_get.9f[here for mac_hcksum_get.9f].
+
+=== Minimum required datapath changes
+
+Network packets store offload state in the leading `dblk_t` of a chain of segments making up a packet.
+The first change required here is that we must explicitly store the tunnel type of a packet as part of this state.
+While tunnel protocols are typically bound to an IP protocol number and/or well-known port, we need proof from the system (or zone, or guest) that this is the intended behaviour.
+For instance, Geneve (<<rfc8926>>, §3.3) and VXLAN (<<rfc7348>>, §5) recommend that the choice of destination port should be configurable.
+Storing this state within the packet prevents us from needing to track and signal all tunnel mappings down to the driver.
+
+We add a `uint8_t` field to `dblk_t`, using the following values:
+
+.usr/src/uts/common/sys/mac_provider.h
+[code,c]
+----
+typedef enum mac_ether_tun_type {
+  METT_NONE = 0,
+  METT_GENEVE,
+  METT_VXLAN
+} mac_ether_tun_type_t;
+----
+
+All `dblk_t` are set to have a tunnel type of `METT_NONE` when created or returned to the `kmem_cache`.
+
+We also need to define new flags representing the validity of the set of inner checksums on a packet:
+
+.usr/src/uts/common/sys/pattr.h
+[code,c]
+----
+#define HCK_INNER_V4CKSUM   0x0020
+#define HCK_INNER_V4CKSUM_OK    0x0040
+
+#define HCK_INNER_PARTIAL   0x0080
+#define HCK_INNER_FULL      0x0100
+#define HCK_INNER_FULL_OK   0x0200
+----
+
+These carry similar meaning to the existing checksum validity flags, applied instead to the _encapsulated_ packet, and still fit within the current bounds of `dblk_t.db_struioun.cksum.flags`.
+The existing flags then describe the checksum state of the outer frame, or are treated as before if the tunnel is `METT_NONE`.
+The combination of the flag `HW_LSO`/`HW_LSO_FLAGS` with a non-zero tunnel type is interpreted as a request for LSO _on the encapsulated packet_.
+A driver/NIC which are not tunnel-aware may still look only at the outermost flags, and consider only the outermost header layers.
+
+Finally, offload emulation (and when we choose to apply it) must become tunnel-aware.
+The changes to `mac_hw_emul` and its application of LSO/CSO are mostly straightforward – we walk (and replicate) more headers to reach the inner frame in the case of LSO (being sure to fix up all lengths), and compute requested checksums the inner and/or outer headers as required.
+The most significant change is that `mac_tx` must be aware of the tunnel type and inner ULP when determining whether offload emulation must be applied, which requires parsing or carrying this information in the `dblk_t`.
+
+=== Packet parsing and impact on IPD55
+
+`mac_ether_offload_info` is used today for the illumos datapath (and MAC providers) to have a consistent means of parsing packets.
+To account for tunnels, the `mac_ether_offload_info_t` needs to be able to represent the type and sizes 
+
+.usr/src/uts/common/sys/mac_provider.h
+[code,c]
+----
+typedef enum mac_ether_offload_flags {
+    MEOI_L2INFO_SET   = 1 << 0, /* l2hlen and l3proto valid */
+    MEOI_L3INFO_SET   = 1 << 1, /* l3hlen and l4proto valid */
+    MEOI_L4INFO_SET   = 1 << 2, /* l4hlen valid */
+
+    /* vvv NEW vvv */
+    MEOI_TUNINFO_SET  = 1 << 3, /* tunhlen valid */
+    /* ^^^ NEW ^^^ */
+
+    MEOI_VLAN_TAGGED  = 1 << 4,
+    MEOI_L3_FRAG_MORE = 1 << 5,
+    MEOI_L3_FRAG_OFFSET = 1 << 6
+} mac_ether_offload_flags_t;
+
+typedef struct mac_ether_offload_info {
+    /* ... existing ... */
+
+    mac_ether_tun_type_t  meoi_tuntype;
+    uint16_t  meoi_tunhlen;
+} mac_ether_offload_info_t;
+
+extern void mac_ether_offload_info(const mblk_t *, mac_ether_offload_info_t *,
+    mac_ether_offload_info_t *);
+extern void mac_ether_set_pktinfo(mblk_t *, const mac_ether_offload_info_t *,
+    const mac_ether_offload_info_t *);
+extern mac_ether_tun_type_t mac_ether_tun_type(const mblk_t *);
+----
+
+
+
+When combined with link:../0055/README.adoc[IPD 55], `dblk_t`-carried packet info must store two layers worth of lengths and protocol kinds.
+This brings us from an 8B overhead to 16B, using the below packing strategy.
+
+.usr/src/uts/common/sys/stream.h
 [code,c]
 ----
 typedef struct packed_meoi {
-  /*
-   * The flags here contain values of type
-   * mac_ether_offload_flags. Currently, this runs up to
-   * (1 << 5) -- 6 flags. Not all are needed, however:
-   * - Tunnel: MEOI_L4INFO_SET is omitted, and is implied
-   *   by the tuntype and valid tuninfo.
-   * - Packet: MEOI_TUNINFO_SET cannot be part of this
-   *   flagset.
-   * The values stored here contain the rightward shift of
-   * all flags following an omitted entry.
-   */
-  uint16_t t_flags: 6;
-  uint16_t p_flags: 6;
-  uint16_t t_tuntype: 4;
+    /*
+     * The flags here contain values of type
+     * mac_ether_offload_flags. Currently, this runs up to
+     * (1 << 6) -- 7 flags. Not all are needed, however:
+     * - Tunnel: MEOI_L4INFO_SET is omitted, and is implied
+     *   by the tuntype and valid tuninfo.
+     * - Packet: MEOI_TUNINFO_SET cannot be part of this
+     *   flagset.
+     * The values stored here contain the rightward shift of
+     * all flags following an omitted entry.
+     */
+    uint16_t t_flags: 6;
+    uint16_t p_flags: 6;
+    uint16_t t_tuntype: 4; /* mac_ether_tun_type_t */
 
-  uint16_t t_l2hlen: DBLK_L2HLEN_WIDTH;
-  uint16_t p_l2hlen: DBLK_L2HLEN_WIDTH;
-  uint16_t p_l4hlen: DBLK_L4HLEN_WIDTH;
-  /* t_l4hlen can be derived from t_tuntype */
+    uint16_t t_l2hlen: DBLK_L2HLEN_WIDTH;
+    uint16_t p_l2hlen: DBLK_L2HLEN_WIDTH;
+    uint16_t p_l4hlen: DBLK_L4HLEN_WIDTH;
+    /* t_l4hlen can be derived from t_tuntype */
 
-  /* L3 len may be unbounded, thanks to v6EHs */
-  uint16_t t_l3hlen;
-  uint16_t p_l3hlen;
+    /* L3 len may be unbounded, thanks to v6EHs */
+    uint16_t t_l3hlen;
+    uint16_t p_l3hlen;
 
-  uint16_t t_l3proto;
-  uint16_t p_l3proto;
+    uint16_t t_l3proto;
+    uint16_t p_l3proto;
 
-  uint16_t t_tunhlen;
-  uint8_t p_l4proto;
-  /* t_l4proto can be derived from t_tuntype */
+    uint16_t t_tunhlen;
+    uint8_t p_l4proto;
+    /* t_l4proto can be derived from t_tuntype */
 } packed_meoi_t;
+
+typedef struct datab {
+    /* ... existing fields ... */
+
+    /*
+     * This union is deliberately used for type punning, making it easier
+     * to check 'any valid info' and to unset all fields' validity on
+     * cleanup.
+     */
+    union {
+        uint16_t valid;
+        packed_meoi_t pktinfo;
+    } db_meoi;
+} dblk_t;
 ----
+
+link:../0055/README.adoc[IPD 55] discusses the impact of a larger `sizeof (packed_meoi_t)`.
+
+== Impact
+
+?? In our implementation, computing whether offloads are needed is now unconditional. Implications?
+
+[bibliography]
+== External References
+
+- [[[rfc6935]]] Eubanks _et al._ IPv6 and UDP Checksums for Tunneled Packets https://datatracker.ietf.org/doc/html/rfc6935
+- [[[rfc6936]]] Fairhurst and Westerlund. Applicability Statement for the Use of IPv6 UDP Datagrams with Zero Checksums https://datatracker.ietf.org/doc/html/rfc6936
+- [[[rfc7348]]] Mahalingam _et al._ Virtual eXtensible Local Area Network (VXLAN): A Framework for Overlaying Virtualized Layer 2 Networks over Layer 3 Networks https://datatracker.ietf.org/doc/html/rfc7348
+- [[[rfc8926]]] Gross _et al._ Geneve: Generic Network Virtualization Encapsulation https://datatracker.ietf.org/doc/html/rfc8926
