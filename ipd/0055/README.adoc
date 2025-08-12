@@ -106,7 +106,6 @@ MAC providers and clients then query and set this information via the following 
 
 [code,c]
 ----
-extern boolean_t mac_ether_l2_info(const mblk_t *, uint8_t *, uint32_t *);
 extern void mac_ether_offload_info(const mblk_t *, mac_ether_offload_info_t *);
 extern void mac_ether_set_pktinfo(mblk_t *, const mac_ether_offload_info_t *);
 extern void mac_ether_clear_pktinfo(mblk_t *);

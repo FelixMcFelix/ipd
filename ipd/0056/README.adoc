@@ -51,19 +51,21 @@ Although inclusion of link:../0055/README.adoc[IPD 55] is by no means a necessit
 
 ?? changes made here : ???
 
-?? <<rfc6935>> and <<rfc6936>> relax v6 + UDP checksum requirement for tunnelled frames.
+?? <<rfc6935>> and <<rfc6936>> relax v6 + UDP checksum requirement for tunneled frames.
 
 ?? _Upper-Layer Protocol_ (ULP)
 
+?? We have left space here for expansion, e.g., (NV)GRE (<<rfc2784>>/<<rfc7637>>).
+
 Source for manpage updates corresponding to these changes can be found at https://github.com/oxidecomputer/illumos-gate/blob/3f1b0849ead4a2ed02b7abc984169d68f9cd63c6/usr/src/man/man9e/mac.9e[here for mac.9e], and https://github.com/oxidecomputer/illumos-gate/blob/3f1b0849ead4a2ed02b7abc984169d68f9cd63c6/usr/src/man/man9f/mac_hcksum_get.9f[here for mac_hcksum_get.9f].
 
-=== Minimum required datapath changes
+=== Required datapath changes
 
 Network packets store offload state in the leading `dblk_t` of a chain of segments making up a packet.
 The first change required here is that we must explicitly store the tunnel type of a packet as part of this state.
 While tunnel protocols are typically bound to an IP protocol number and/or well-known port, we need proof from the system (or zone, or guest) that this is the intended behaviour.
 For instance, Geneve (<<rfc8926>>, §3.3) and VXLAN (<<rfc7348>>, §5) recommend that the choice of destination port should be configurable.
-Storing this state within the packet prevents us from needing to track and signal all tunnel mappings down to the driver.
+Storing this state within the packet prevents us from needing to track and signal all tunnel mappings down to every driver.
 
 We add a `uint8_t` field to `dblk_t`, using the following values:
 
@@ -78,6 +80,7 @@ typedef enum mac_ether_tun_type {
 ----
 
 All `dblk_t` are set to have a tunnel type of `METT_NONE` when created or returned to the `kmem_cache`.
+As with other offload-related information, the datapath and MAC-provided APIs are responsible for replicating or amending this state during packet clones, pullups, or stripping header layers.
 
 We also need to define new flags representing the validity of the set of inner checksums on a packet:
 
@@ -101,10 +104,10 @@ Finally, offload emulation (and when we choose to apply it) must become tunnel-a
 The changes to `mac_hw_emul` and its application of LSO/CSO are mostly straightforward – we walk (and replicate) more headers to reach the inner frame in the case of LSO (being sure to fix up all lengths), and compute requested checksums the inner and/or outer headers as required.
 The most significant change is that `mac_tx` must be aware of the tunnel type and inner ULP when determining whether offload emulation must be applied, which requires parsing or carrying this information in the `dblk_t`.
 
-=== Packet parsing and impact on IPD55
+=== Packet parsing
 
-`mac_ether_offload_info` is used today for the illumos datapath (and MAC providers) to have a consistent means of parsing packets.
-To account for tunnels, the `mac_ether_offload_info_t` needs to be able to represent the type and sizes 
+`mac_ether_offload_info` is used today by the illumos datapath and MAC providers to have a consistent means of parsing packets.
+To account for tunnels, the `mac_ether_offload_info_t` needs to be able to represent the type and length of a tunnel header located after the last valid L3/L4 outer header:
 
 .usr/src/uts/common/sys/mac_provider.h
 [code,c]
@@ -124,6 +127,8 @@ typedef enum mac_ether_offload_flags {
 } mac_ether_offload_flags_t;
 
 typedef struct mac_ether_offload_info {
+    mac_ether_offload_flags_t   meoi_flags;
+
     /* ... existing ... */
 
     mac_ether_tun_type_t  meoi_tuntype;
@@ -132,15 +137,31 @@ typedef struct mac_ether_offload_info {
 
 extern void mac_ether_offload_info(const mblk_t *, mac_ether_offload_info_t *,
     mac_ether_offload_info_t *);
-extern void mac_ether_set_pktinfo(mblk_t *, const mac_ether_offload_info_t *,
-    const mac_ether_offload_info_t *);
 extern mac_ether_tun_type_t mac_ether_tun_type(const mblk_t *);
 ----
 
+The `mac_ether_offload_info` API must also change to account for encapsulation.
+A caller specifies at least one of the two optional parameters `outer_info` and `inner_info`.
+The function now inspects the tunnel type embedded in a `dblk_t` to determine whether it should attempt to parse the outermost headers to match that tunnel type, enforcing invariants like the presence of UDP as an L4 protocol in Geneve <<rfc8926>> or VXLAN <<rfc7348>>.
+In any `mac_ether_offload_info_t` written by the parser (or set on the packet à la link:../0055/README.adoc[IPD 55]), `meoi_flags` and `meoi_tuntype` are always required to be valid.
 
+Drivers which are not tunnel-aware may still call `mac_ether_offload_info(mp, &meoi, NULL)` to parse only the outermost layers, as they do today.
 
-When combined with link:../0055/README.adoc[IPD 55], `dblk_t`-carried packet info must store two layers worth of lengths and protocol kinds.
+=== Impact on IPD55
+
+When combined with link:../0055/README.adoc[IPD 55], `dblk_t`-carried packet info must store two layers of lengths and protocol kinds.
+As above, a MAC client may set no/one/both layer(s) of this state:
+
+.usr/src/uts/common/sys/mac_provider.h
+[code,c]
+----
+extern void mac_ether_set_pktinfo(mblk_t *, const mac_ether_offload_info_t *,
+    const mac_ether_offload_info_t *);
+----
+
 This brings us from an 8B overhead to 16B, using the below packing strategy.
+The IPD itself discusses the impact of a larger `sizeof (packed_meoi_t)` on `kmem_cache` sizes.
+We use this to include the necessary `mac_ether_tun_type_t` field.
 
 .usr/src/uts/common/sys/stream.h
 [code,c]
@@ -193,16 +214,20 @@ typedef struct datab {
 } dblk_t;
 ----
 
-link:../0055/README.adoc[IPD 55] discusses the impact of a larger `sizeof (packed_meoi_t)`.
+When accessed using `mac_ether_offload_info`, the inner and/or outer `mac_ether_offload_info_t` will be initialised using the `packed_meoi_t` and completed using a parse if required.
 
 == Impact
 
-?? In our implementation, computing whether offloads are needed is now unconditional. Implications?
+In our implementation, we have made the `mac_tx` check on required offloads https://github.com/oxidecomputer/illumos-gate/blob/3f1b0849ead4a2ed02b7abc984169d68f9cd63c6/usr/src/uts/common/io/mac/mac_client.c#L3746-L3806[unconditional], rather than only occurring when https://github.com/oxidecomputer/illumos-gate/blob/3f1b0849ead4a2ed02b7abc984169d68f9cd63c6/usr/src/uts/common/io/mac/mac_sched.c#L646-L674[the simple case Tx cannot be applied].
+By storing parse data for tunneled frames in the `dblk_t`, we can afford to do so as the cost of extracting the inner ULP info is minimised.
+This allows for tunnel devices to unconditionally advertise capabilities to upstream clients without conditionally determining whether they themselves should conditionally perform emulation.
 
 [bibliography]
 == External References
 
+- [[[rfc2784]]] Farinacci _et al._ Generic Routing Encapsulation (GRE) https://datatracker.ietf.org/doc/html/rfc2784
 - [[[rfc6935]]] Eubanks _et al._ IPv6 and UDP Checksums for Tunneled Packets https://datatracker.ietf.org/doc/html/rfc6935
 - [[[rfc6936]]] Fairhurst and Westerlund. Applicability Statement for the Use of IPv6 UDP Datagrams with Zero Checksums https://datatracker.ietf.org/doc/html/rfc6936
 - [[[rfc7348]]] Mahalingam _et al._ Virtual eXtensible Local Area Network (VXLAN): A Framework for Overlaying Virtualized Layer 2 Networks over Layer 3 Networks https://datatracker.ietf.org/doc/html/rfc7348
+- [[[rfc7637]]] Garg and Wang. NVGRE: Network Virtualization Using Generic Routing Encapsulation https://datatracker.ietf.org/doc/html/rfc7637
 - [[[rfc8926]]] Gross _et al._ Geneve: Generic Network Virtualization Encapsulation https://datatracker.ietf.org/doc/html/rfc8926
