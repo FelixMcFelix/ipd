@@ -298,6 +298,8 @@ typedef struct datab {
 ----
 
 When accessed using `mac_ether_offload_info`, the inner and/or outer `mac_ether_offload_info_t` will be initialised using the `packed_meoi_t` and completed using a parse if required.
+In this case, a packet's tunnel type is set using the `mac_ether_set_pktinfo` function according to that in the `outer_info` parameter.
+A non-zero tunnel type on the inner info is considered an illegal argument.
 
 == Impact
 
