@@ -48,7 +48,8 @@ This change also specifically benefits tunnel-aware offloads as part of link:../
 In this context storing a packet's tunnel type within the `dblk_t` to control offload behaviour is necessary at a bare minimum, but avoiding *two* header stack parses per packet is a significant win.
 
 This work is currently implemented alongside link:../0056/README.adoc[IPD 56] in stlouis/Helios commit https://github.com/oxidecomputer/illumos-gate/commit/53ed1e30b6807e5e9d694326390914e7c53c0c94[53ed1e30b6807e5e9d694326390914e7c53c0c94].
-The linked commit does not wire up upstream clients such as `ip` to fill out this information; we use this in the https://github.com/oxidecomputer/opte:[OPTE kernel module] after packet encapsulation and decapsulation, which benefits both viona and the downstream NICs used for packet transmit on the order of several hundred Mbps.
+The linked commit does not wire up upstream clients such as `ip` to fill out this information; we use this in the https://github.com/oxidecomputer/opte:[OPTE kernel module] after packet encapsulation and decapsulation, which benefits both viona and the downstream NICs used for packet transmit on the order of ~200Mbps.
+As with IPD 56, this work has been in use in our development environments and customer releases for several months now.
 
 == Proposal
 
