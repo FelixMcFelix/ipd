@@ -55,7 +55,7 @@ Although inclusion of link:../0055/README.adoc[IPD 55] is by no means a necessit
 
 === MAC provider interface
 
-These capabilities are extensions to the existing `MAC_CAPAB_HCKSUM` and `MAC_CAPAB_LSO` queries which can be handled by a provider's `mc_getcapab`.
+These capabilities are extensions to the existing `MAC_CAPAB_HCKSUM` and `MAC_CAPAB_LSO` queries which can be handled by a provider's `mc_getcapab` callback.
 We first define some shared types for use in these extensions:
 
 .usr/src/uts/common/sys/mac_provider.h
@@ -68,7 +68,7 @@ We first define some shared types for use in these extensions:
 #define MAC_CAPAB_TUN_TYPE_VXLAN    0x02    /* RFC 7348 */
 ----
 
-There is ample space here for expansion in future, e.g., (NV)GRE (<<rfc2784>>/<<rfc7637>>).
+We represent this with a `uint32_t` in the provider interface leaving plenty of space for expansion in future, e.g., (NV)GRE (<<rfc2784>>/<<rfc7637>>).
 
 When queried for `MAC_CAPAB_HCKSUM`, drivers are today expected to fill a `uint32_t` of `HCKSUM_*` flags defined in `usr/src/uts/common/sys/dlpi.h`.
 We redefine this payload for backward compatibility with a `mac_capab_cso_t`, and insert a new field to describe tunnel-aware checksum offloads:
@@ -101,9 +101,9 @@ typedef struct mac_capab_cso_s {
 } mac_capab_cso_t;
 ----
 
-Compatible providers will write the `cso_tunnel` member, and signal that it is valid using a new `HCKSUM_TUN` flag.
+Compatible providers will write the `cso_tunnel` member and signal that it is valid using a new `HCKSUM_TUN` flag.
 Here, `ct_types` is a bitwise OR of `MAC_CAPAB_TUN_TYPE_*` elements supported by the device, and `ct_flags` is the bitwise OR of `MAC_CSO_TUN_*` checksum types supported by the device for both the outer headers and _Upper-Layer Protocols_ (ULPs).
-`ct_encap_max` constrains the largest size which an encapsulation header can be to support this class of offload, possibly as imposed by a field size in a TX request.
+`ct_encap_max` constrains how large an encapsulation header can be for the offload to be usable, possibly as imposed by a field size in a TX request.
 
 When queried for `MAC_CAPAB_LSO`, we add a new field to the existing capability to capture tunnel-aware TCP large segmentation offload:
 
@@ -131,7 +131,7 @@ typedef struct mac_capab_lso_s {
 } mac_capab_lso_t;
 ----
 
-Compatible providers will write the `lso_tunnel_tcp` member, and signal that it is valid using a new `LSO_TX_TUNNEL_TCP` flag.
+Compatible providers will write the `lso_tunnel_tcp` member and signal that it is valid using a new `LSO_TX_TUNNEL_TCP` flag.
 `tun_types` and `tun_encap_max` work analogously to `ct_types` and `ct_encap_max`, respectively.
 `tun_pay_max` serves the same role as the existing `lso_max` member of `lso_basic_tcp_ipv4_t`/`lso_basic_tcp_ipv6_t`, marking the largest TCP segment which can be carried.
 `tun_flags` indicates additional capabilities around checksums, option handling etc.
@@ -177,15 +177,16 @@ We also need to define new flags representing the validity of the set of inner c
 #define HCK_INNER_FULL_OK   0x0200
 ----
 
-These carry similar meaning to the existing checksum validity flags, applied instead to the _encapsulated_ packet, and still fit within the current bounds of `dblk_t.db_struioun.cksum.flags`.
-The existing flags then describe the checksum state of the outer frame, or are treated as before if the tunnel is `METT_NONE`.
+These carry similar meaning to the existing checksum validity flags, applied instead to the _encapsulated_ packet, and still fit within the current bounds of `dblk_t.db_struioun.cksum.flags` (a `uint16_t`).
+The existing flags are treated as they are today if the tunnel type is `METT_NONE`, otherwise they describe the checksum state of the _outer frame_.
 The combination of the flag `HW_LSO`/`HW_LSO_FLAGS` with a non-zero tunnel type is interpreted as a request for LSO _on the encapsulated packet_.
 A driver/NIC which are not tunnel-aware may still look only at the outermost flags, and consider only the outermost header layers.
 
 Finally, offload emulation (and when we choose to apply it) must become tunnel-aware.
 The changes to `mac_hw_emul` and its application of LSO/CSO are mostly straightforward – we walk (and replicate) more headers to reach the inner frame in the case of LSO (being sure to fix up all lengths), and compute requested checksums the inner and/or outer headers as required.
-One constraint in which it should not be overzealous is that outer UDP checksums are allowed to be omitted for tunnelled packets <<rfc6935>><<rfc6936>> – these should only be filled if requested, and omission should be generally permitted in the outer layer.
+One constraint in which `mac_hw_emul` should not be overzealous is that outer UDP checksums are allowed to be omitted for tunnelled packets <<rfc6935>><<rfc6936>> – these should only be filled if requested, and omission should be generally permitted in the outer layer.
 The most significant change is that `mac_tx` must be aware of the tunnel type and inner ULP when determining whether offload emulation must be applied, which requires parsing or carrying this information in the `dblk_t`.
+This more expensive logic is not required when the tunnel type is `METT_NONE`, where the existing emulation checks can be used.
 
 === Packet parsing
 
